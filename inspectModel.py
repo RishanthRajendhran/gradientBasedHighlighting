@@ -12,7 +12,7 @@ import transformers
 from transformers.pipelines import TextClassificationPipeline
 from transformers import AutoTokenizer
 from transformers import AutoModelForSequenceClassification
-from captum.attr import LayerIntegratedGradients, TokenReferenceBase
+from captum.attr import LayerIntegratedGradients, TokenReferenceBase, visualization
 
 import matplotlib.pyplot as plt
 
@@ -27,6 +27,11 @@ class ExplainableTransformerPipeline():
         self.__name = name
         self.__pipeline = pipeline
         self.__device = device
+        self.indToLabel = ["Negative", "Positive"]
+        self.labelToInd = {
+            "Negative": 0,
+            "Positive": 1,
+        }
     
     def forward_func(self, inputs: tensor, position = 0):
         """
@@ -36,7 +41,11 @@ class ExplainableTransformerPipeline():
                        attention_mask=torch.ones_like(inputs))
         return pred[position]
         
-    def visualize(self, inputs: list, attributes: list, outfile_path: str):
+    def visualize(self, 
+            inputs: list, 
+            attributes: list, 
+            outfile_path: str,
+        ):
         """
             Visualization method.
             Takes list of inputs and correspondent attributs for them to visualize in a barplot
@@ -46,13 +55,20 @@ class ExplainableTransformerPipeline():
         
         attr = attr_sum / torch.norm(attr_sum)
         
-        a = pd.Series(attr.numpy()[0][::-1], 
-                         index = self.__pipeline.tokenizer.convert_ids_to_tokens(inputs.detach().numpy()[0])[::-1])
-        
-        a.plot.barh(figsize=(10,20))
-        plt.savefig(outfile_path)
+        splits = len(attr.numpy()[0][::-1])//50
+        for i, split in enumerate(range(splits)):
+            start, end = split*50, (split+1)*50
+            if i == splits-1:
+                a = pd.Series(attr.numpy()[0][::-1][start:], 
+                                index = self.__pipeline.tokenizer.convert_ids_to_tokens(inputs.detach().numpy()[0])[::-1][start:])
+            else: 
+                a = pd.Series(attr.numpy()[0][::-1][start:end], 
+                            index = self.__pipeline.tokenizer.convert_ids_to_tokens(inputs.detach().numpy()[0])[::-1][start:end])
+            
+            a.plot.barh(figsize=(10,20))
+            plt.savefig(outfile_path+"_"+str(split))
                       
-    def explain(self, text: str, outfile_path: str):
+    def explain(self, text: str, label: int, outfile_path: str):
         """
             Main entry method. Passes text through series of transformations and through the model. 
             Calls visualization method.
@@ -61,6 +77,8 @@ class ExplainableTransformerPipeline():
         inputs = self.generate_inputs(text)
         baseline = self.generate_baseline(sequence_len = inputs.shape[1])
         
+        preds = self.forward_func(inputs)
+
         lig = LayerIntegratedGradients(self.forward_func, getattr(self.__pipeline.model, 'deberta').embeddings)
         
         attributes, delta = lig.attribute(inputs=inputs,
@@ -68,7 +86,11 @@ class ExplainableTransformerPipeline():
                                   target = self.__pipeline.model.config.label2id[prediction[0]['label']], 
                                   return_convergence_delta = True)
         # Give a path to save
-        self.visualize(inputs, attributes, outfile_path)
+        self.visualize(
+            inputs, 
+            attributes, 
+            outfile_path,
+        )
     
     def generate_inputs(self, text: str) -> tensor:
         """
@@ -98,7 +120,7 @@ def main(args):
     idx=0
     with jsonlines.open(args.a1_analysis_file, 'r') as reader:
         for obj in reader:
-            exp_model.explain(obj["review"], os.path.join(args.output_dir,f'example_{idx}'))
+            exp_model.explain(obj["review"], obj["label"], os.path.join(args.output_dir,f'example_{idx}'))
             idx+=1
 
 if __name__ == '__main__':
